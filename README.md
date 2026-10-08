@@ -310,15 +310,32 @@ applies. Two things bite:
    `internal.import(specifier, bareModuleBaseUrl)`, not to
    `<profile>/node_modules`. Writing a peer range from the profile's copies can
    therefore fail validation.
-2. **A peer range without an explicit prerelease branch silently excludes every
+2. **The version on npm is not the version the runtime provides either.** The
+   check compares each range against the *runtime* version, so a package that
+   stopped publishing to npm at `0.1.x` while the runtime ships `0.2.x` still has
+   to be ranged against `0.2.x`. Ranging it against what npm happens to offer
+   rejects the bundle. This is the mistake that shipped in `5b85d5d`:
+   `dsh-client-runtime` publishes only up to `0.1.1-rc.2` on npm, but the desktop
+   runtime provides `0.2.0-rc.2`, so a `^0.1.x` range skipped the whole plugin.
+3. **A peer range without an explicit prerelease branch silently excludes every
    prerelease build.** Use a union that names the prerelease tuple:
 
 ```json
-"@deepseek-ai/dsh-skill": "^0.1.0-rc.6 || ^0.2.0-rc.2"
+"@deepseek-ai/dsh-skill": "^0.1.0-rc.2 || ^0.1.0-rc.6 || ^0.1.5-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2"
 ```
 
 **Diagnosing**: `plugin_manager list_bundles` — look for
-`error.code: "incompatible-version"` on the bundle.
+`error.code: "incompatible-version"` on the bundle. The failure is silent from
+the plugin's side: it does not load, yet its `cordis.patch.yml` still applies, so
+`tool-skill` stays disabled while nothing takes over the `skill` tool.
+
+**Verifying a range before shipping**: check it against the runtime version with
+the same library DSH uses, rather than by reading version lists.
+
+```js
+const semver = require('semver')
+semver.satisfies('0.2.0-rc.2', range, { includePrerelease: true })
+```
 
 ### Cross-version API differences
 
@@ -341,7 +358,6 @@ bash test/run-all.sh
 | `session-state.test.mjs` | Posture application, work-list ∩ live catalog, row projection, input validation |
 | `integration-routes.mjs` | Real cordis context driving the HTTP routes: mount, toggle, mode, status codes, disposal cleanup |
 | `integration-catalog.mjs` | Driving `agent/pre-step`: first publication, no re-publish when unchanged, replacement on change, a disabled skill cannot load, no injection once unmounted |
-| `sse-stream.test.mjs` | Shared event stream: opens without a session id, every subscriber receives frames, a closed stream goes silent, and **session isolation holds across a shared stream** |
 | `group.test.mjs` | Skill groups: mounting moves only its own members, **unrelated skills are never swept**, idempotence, unknown group 404, roster survives a restart |
 
 ---

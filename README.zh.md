@@ -271,15 +271,29 @@ DSH 会校验第三方 bundle 的 peer 范围，**不匹配时静默跳过整个
    `internal.import(specifier, bareModuleBaseUrl)` 把 `@deepseek-ai/*` 重定向到它
    自己 asar 内的包（当前 `0.2.0-rc.2`），而不是 `<profile>/node_modules`。照抄
    profile 里的版本写 peer 范围，可能过不了校验。
-2. **不含显式预发布分支的 peer 范围会静默排除所有预发布构建。** 用能点出预发布
+2. **npm 上的版本也不是运行时提供的版本。** 校验比的是每个范围能否匹配
+   **运行时版本**；所以一个在 npm 上只发到 `0.1.x`、而运行时提供 `0.2.x` 的包，
+   仍然必须按 `0.2.x` 来写范围。按 npm 上碰巧有的版本去写，会直接把 bundle 判掉。
+   这正是 `5b85d5d` 里发出去的错误：`dsh-client-runtime` 在 npm 上只发到
+   `0.1.1-rc.2`，而桌面运行时提供 `0.2.0-rc.2` —— 写成 `^0.1.x` 就跳过了整个插件。
+3. **不含显式预发布分支的 peer 范围会静默排除所有预发布构建。** 用能点出预发布
    元组的并集：
 
 ```json
-"@deepseek-ai/dsh-skill": "^0.1.0-rc.6 || ^0.2.0-rc.2"
+"@deepseek-ai/dsh-skill": "^0.1.0-rc.2 || ^0.1.0-rc.6 || ^0.1.5-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2"
 ```
 
 **排查方法**：`plugin_manager list_bundles`，看该 bundle 有没有
-`error.code: "incompatible-version"`。
+`error.code: "incompatible-version"`。这个失败从插件这侧看是**静默的**：它不加载，
+但它的 `cordis.patch.yml` 仍然生效 —— 于是 `tool-skill` 保持禁用，却没有任何东西
+接管 `skill` 工具。
+
+**发布前验证范围**：用 DSH 自己用的同一个库去比对运行时版本，而不是去读版本列表。
+
+```js
+const semver = require('semver')
+semver.satisfies('0.2.0-rc.2', range, { includePrerelease: true })
+```
 
 ### 跨版本 API 差异
 
@@ -301,7 +315,6 @@ bash test/run-all.sh
 | `session-state.test.mjs` | 姿态应用、work 清单与实时目录求交、行投影、输入校验 |
 | `integration-routes.mjs` | 真实 cordis context 驱动 HTTP 路由：挂载、切换、模式、错误码、销毁清理 |
 | `integration-catalog.mjs` | 驱动 `agent/pre-step`：首次发布、无变化不重发、切换后发 replacement、关闭的 skill 无法加载、全关后不再注入 |
-| `sse-stream.test.mjs` | 共享事件流：无需 sessionId 即可打开、每个订阅者都收到帧、关闭的流静默、**共享流下会话隔离仍成立** |
 | `group.test.mjs` | 技能组：挂载只动自己成员、**无关技能绝不被误移**、幂等、未知组 404、roster 跨重启存活 |
 
 ---

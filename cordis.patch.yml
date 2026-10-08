@@ -1,0 +1,60 @@
+# dsh-skill-switch bundle patch.
+#
+# Two things this layer does.
+#
+# 1. It disables `tool-skill`. This plugin takes over the model-facing `skill`
+#    tool and its session catalog: the official catalog advertises every
+#    model-invocable skill unconditionally and re-publishes a replacement
+#    message whenever its digest moves, so per-session filtering has to own the
+#    injection rather than sit behind it.
+#
+#    ⚠️ If you already rely on `tool-skill`'s own behaviour, this plugin
+#    replaces it. The replacement is a port of the official implementation
+#    (catalog rendering, digest comparison, the `skill` tool) with per-session
+#    filtering added; it is not a wrapper around it.
+#
+# 2. It inserts this plugin with neutral defaults. Everything deployment-
+#    specific — where your skill repository lives, which hub the host scans,
+#    which bundles stay parked — belongs in YOUR profile patch, not here.
+#    See "Configuration" in README.md.
+- id: tool-skill
+  disabled: true
+- insert:
+    - id: skill-switch
+      name: 'dsh-skill-switch'
+      config:
+        # Posture a new session starts in: all | none | work
+        defaultMode: all
+        # Skills the "work" posture enables. Fill this in after you have seen
+        # the real catalog in the strip.
+        workSkills: []
+        # Maximum description length rendered in the model-facing catalog.
+        catalogDescriptionMaxLength: 500
+        # HTTP path prefix for the browser-facing routes.
+        routePrefix: '/skill-switch'
+        # Absolute path of a script the strip's refresh control runs, e.g. one
+        # that syncs your skill repository into the hub the host scans. Leave
+        # empty to hide the control. See "Sync" in README.md.
+        syncScript: ''
+        syncTimeoutMs: 60000
+        # Absolute path of the hub the host scans for skills. Required only if
+        # you configure skillGroups. See "Skill groups" in README.md.
+        hubDir: ''
+        # All-or-nothing skill bundles, moved between parkDir and hubDir as one
+        # unit. Empty by default.
+        #
+        # Why whole groups rather than per-skill switches: some families are
+        # both huge and interdependent — a member's SKILL.md links its siblings
+        # by relative path — so loading one alone breaks its references, while
+        # listing all of them costs their catalog lines whether or not the
+        # session uses them. Parking the family outside the hub keeps it at zero
+        # catalog cost.
+        #
+        # Example:
+        #   skillGroups:
+        #     - id: lark
+        #       label: 'Feishu CLI'
+        #       description: '27 Feishu skills, mounted and parked as one unit'
+        #       parkDir: '/home/you/.agents-parked/lark'
+        #       discover: true
+        skillGroups: []

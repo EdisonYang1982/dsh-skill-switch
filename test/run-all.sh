@@ -7,5 +7,6 @@ node test/verify-scope-routing.mjs
 node test/extract-state-region.mjs && node test/session-state.test.mjs
 node test/integration-routes.mjs
 node test/integration-catalog.mjs
+node test/sse-stream.test.mjs
 node test/group.test.mjs
 echo "all test suites passed"

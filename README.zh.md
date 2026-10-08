@@ -301,6 +301,7 @@ bash test/run-all.sh
 | `session-state.test.mjs` | 姿态应用、work 清单与实时目录求交、行投影、输入校验 |
 | `integration-routes.mjs` | 真实 cordis context 驱动 HTTP 路由：挂载、切换、模式、错误码、销毁清理 |
 | `integration-catalog.mjs` | 驱动 `agent/pre-step`：首次发布、无变化不重发、切换后发 replacement、关闭的 skill 无法加载、全关后不再注入 |
+| `sse-stream.test.mjs` | 共享事件流：无需 sessionId 即可打开、每个订阅者都收到帧、关闭的流静默、**共享流下会话隔离仍成立** |
 | `group.test.mjs` | 技能组：挂载只动自己成员、**无关技能绝不被误移**、幂等、未知组 404、roster 跨重启存活 |
 
 ---

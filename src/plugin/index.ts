@@ -170,12 +170,14 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   const sessions = new Map<string, SessionRegistration>()
   /**
-   * Live SSE subscribers, keyed by session. The browser holds one stream per
-   * open session and re-reads state on every `changed` frame, so a toggle made
-   * in one tab (or by the model, or by a skills/change notification) reaches
-   * every other view without polling.
+   * Live SSE subscribers. One set for the whole host, not one per session: a
+   * browser caps same-origin connections at six, and a stream per session meant
+   * every session switch opened a new one while the old drained — enough quick
+   * switches and the pool is full, after which the `state` fetch never resolves
+   * and the strip stays blank. A frame carries no session identity, so a single
+   * stream can serve every view; each client re-reads with its own session id.
    */
-  const subscribers = new Map<string, Set<(event: string) => void>>()
+  const subscribers = new Set<(event: string) => void>()
   /** Last discovered catalog per session, so the HTTP routes can answer fast. */
   const catalogCache = new Map<string, { name: string; description: string }[]>()
 
@@ -280,14 +282,14 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   /**
-   * Notify every live subscriber of one session that its state moved.
-   * @param sessionId - the session whose view is stale.
+   * Notify every live subscriber that some session's state moved. The frame is
+   * deliberately session-agnostic: clients re-read with the id they hold, so a
+   * change caused by one session still refreshes a view that has since switched
+   * to another.
    * @param event - frame name the client reacts to (`changed` re-reads state).
    */
-  function publish(sessionId: string, event: string): void {
-    const listeners = subscribers.get(sessionId)
-    if (listeners === undefined) return
-    for (const listener of [...listeners]) {
+  function publish(event: string): void {
+    for (const listener of [...subscribers]) {
       try {
         listener(event)
       } catch {
@@ -622,7 +624,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             // may or may not have noticed by now, so drop the memo explicitly
             // and tell every open strip to re-read.
             catalogCache.clear()
-            for (const sessionId of subscribers.keys()) publish(sessionId, 'changed')
+            publish('changed')
             sendJson(res, 200, result)
           } catch (error) {
             sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -631,20 +633,23 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
     })
 
-    // Server-sent events: one stream per open session. `skills/change` is not
-    // on the Host event forward allowlist, so a browser cannot subscribe to it
-    // directly; pushing our own frames keeps the strip live without polling and
-    // without depending on that list growing.
+    // Server-sent events: ONE stream per browser, carrying no session identity.
+    //
+    // A stream per session looked natural but is a trap: the composer dock is a
+    // session-scoped slot, so switching sessions remounts the strip, which closes
+    // the old stream and opens a new one. Browsers cap same-origin connections at
+    // six, and a stream that has not finished draining still holds its slot — a
+    // few quick switches fill the pool, after which the strip's own `state` fetch
+    // queues forever and the strip never appears. One long-lived stream avoids
+    // the churn entirely; the client re-reads with whatever session id it holds.
+    //
+    // `skills/change` is not on the Host event forward allowlist, so a browser
+    // cannot subscribe to it directly; pushing our own frame keeps the strip live
+    // without polling and without depending on that list growing.
     host.webServer.register({
       kind: 'exact',
       path: `${routePrefix}/events`,
       handler: (req: IncomingMessage, res: ServerResponse) => {
-        const url = new URL(req.url ?? '/', 'http://localhost')
-        const sessionId = url.searchParams.get('sessionId')
-        if (sessionId === null || sessionId === '') {
-          sendJson(res, 400, { error: 'sessionId is required' })
-          return
-        }
         res.writeHead(200, {
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-store',
@@ -653,23 +658,33 @@ export function apply(ctx: Context, config: Config = {}): void {
           'x-accel-buffering': 'no',
         })
         res.write(': connected\n\n')
-        const listener = (event: string): void => {
-          res.write(`event: ${event}\ndata: {}\n\n`)
+        // A response can close between the check and the write, and writing then
+        // throws. Track closure and swallow it, so one dead stream cannot surface
+        // as an error in an unrelated request.
+        let closed = false
+        const write = (chunk: string): void => {
+          if (closed) return
+          try {
+            res.write(chunk)
+          } catch {
+            closed = true
+          }
         }
-        const listeners = subscribers.get(sessionId) ?? new Set()
-        listeners.add(listener)
-        subscribers.set(sessionId, listeners)
+        const listener = (event: string): void => {
+          write(`event: ${event}\ndata: {}\n\n`)
+        }
+        subscribers.add(listener)
         // Comment frames keep intermediaries from closing an idle stream.
-        const keepAlive = setInterval(() => res.write(': ping\n\n'), 25_000)
+        const keepAlive = setInterval(() => write(': ping\n\n'), 25_000)
         const cleanup = (): void => {
+          if (closed) return
+          closed = true
           clearInterval(keepAlive)
-          const current = subscribers.get(sessionId)
-          if (current === undefined) return
-          current.delete(listener)
-          if (current.size === 0) subscribers.delete(sessionId)
+          subscribers.delete(listener)
         }
         req.on('close', cleanup)
         res.on('close', cleanup)
+        res.on('error', cleanup)
       },
     })
 
@@ -732,7 +747,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             registration.state.mode = registration.state.enabled.size === 0 ? 'none' : registration.state.mode
             const agent = agentFor(sessionId)
             if (agent !== undefined) syncTool(agent, registration)
-            publish(sessionId, 'changed')
+            publish('changed')
             sendJson(res, 200, { mode: registration.state.mode, skills: toRows(catalog, registration.state) })
           } catch (error) {
             sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -765,7 +780,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             applyMode(registration.state, mode, workSkills, catalog.map((s) => s.name))
             const agent = agentFor(sessionId)
             if (agent !== undefined) syncTool(agent, registration)
-            publish(sessionId, 'changed')
+            publish('changed')
             sendJson(res, 200, { mode: registration.state.mode, skills: toRows(catalog, registration.state) })
           } catch (error) {
             sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -803,7 +818,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             const result = await setGroupMounted(group, mounted)
             // The catalog changed on disk; drop the memo and wake every strip.
             catalogCache.clear()
-            for (const sessionId of subscribers.keys()) publish(sessionId, 'changed')
+            publish('changed')
             sendJson(res, 200, {
               groups: groupViews(),
               moved: result.moved,
@@ -824,6 +839,6 @@ export function apply(ctx: Context, config: Config = {}): void {
     // state on the frame, so a cached catalog would hand it the stale list it
     // is being told to refresh away from.
     catalogCache.clear()
-    for (const sessionId of subscribers.keys()) publish(sessionId, 'changed')
+    publish('changed')
   })
 }

@@ -71,6 +71,56 @@ export type SkillDockProps = PropsRuntime<'conversation.input.dock'>
 
 const ROUTE = '/skill-switch'
 
+/**
+ * One shared event stream for the whole page.
+ *
+ * The composer dock is a session-scoped slot, so switching sessions unmounts and
+ * remounts the strip. Opening the stream inside the component therefore closed
+ * and reopened it on every switch; because browsers cap same-origin connections
+ * at six and an undrained stream still holds its slot, a few quick switches
+ * could exhaust the pool and leave the strip's own `state` fetch queued forever
+ * — the strip would simply never appear. Hoisting the stream to module scope
+ * makes it independent of the component's lifecycle: a remount only adds and
+ * removes a listener, and the connection count stays at one.
+ *
+ * The frame carries no session identity, so every subscriber re-reads with the
+ * session id it currently holds.
+ */
+const streamListeners = new Set<() => void>()
+let stream: EventSource | null = null
+
+/**
+ * Subscribe to catalog-change frames, opening the shared stream on the first
+ * subscriber and closing it when the last one leaves.
+ * @param listener - invoked on every `changed` frame.
+ * @returns the unsubscribe function.
+ */
+function subscribeToChanges(listener: () => void): () => void {
+  streamListeners.add(listener)
+  if (stream === null && typeof EventSource !== 'undefined') {
+    const opened = new EventSource(`${ROUTE}/events`)
+    const onChanged = (): void => {
+      for (const notify of [...streamListeners]) {
+        try {
+          notify()
+        } catch {
+          // One broken subscriber must not stop the others.
+        }
+      }
+    }
+    opened.addEventListener('changed', onChanged)
+    stream = opened
+  }
+  return () => {
+    streamListeners.delete(listener)
+    // The last view to leave closes the connection; a remount reopens it.
+    if (streamListeners.size === 0 && stream !== null) {
+      stream.close()
+      stream = null
+    }
+  }
+}
+
 /** POST one JSON body to a host route and decode the response. */
 async function post(path: string, body: Record<string, unknown>): Promise<StateResponse> {
   const res = await fetch(`${ROUTE}${path}`, {
@@ -97,7 +147,12 @@ function readOpen(): boolean {
  */
 export function SkillDock({ sessionId }: SkillDockProps) {
   const [state, setState] = React.useState<StateResponse | null>(null)
-  const [failed, setFailed] = React.useState(false)
+  /**
+   * Last fetch failure, or null. Kept as text rather than a boolean: a strip
+   * that silently disappears gives the user nothing to report, and the two
+   * causes (host unreachable vs. a route error) need different fixes.
+   */
+  const [failure, setFailure] = React.useState<string | null>(null)
   const [open, setOpen] = React.useState(readOpen)
   /**
    * Sync feedback is a short-lived button state, not a log pane: `ok` reverts
@@ -120,35 +175,31 @@ export function SkillDock({ sessionId }: SkillDockProps) {
       })
       .then((body) => {
         setState(body)
-        setFailed(false)
+        setFailure(null)
       })
-      .catch(() => setFailed(true))
+      .catch((error: unknown) => {
+        setFailure(error instanceof Error ? error.message : String(error))
+      })
   }, [sessionId])
 
   React.useEffect(refresh, [refresh])
 
-  // Live updates over server-sent events: the host pushes a `changed` frame on
-  // every toggle, mode switch, sync run, and `skills/change`, so the strip
-  // reflects a newly added skill immediately instead of waiting for a poll
-  // tick. The stream is per session and reconnects on its own.
-  React.useEffect(() => {
-    if (typeof EventSource === 'undefined') return
-    const source = new EventSource(`${ROUTE}/events?sessionId=${encodeURIComponent(sessionId)}`)
-    const onChanged = (): void => refresh()
-    source.addEventListener('changed', onChanged)
-    return () => {
-      source.removeEventListener('changed', onChanged)
-      source.close()
-    }
-  }, [sessionId, refresh])
+  // Live updates ride the page-wide stream (see subscribeToChanges): the host
+  // pushes `changed` on every toggle, mode switch, sync run, and `skills/change`,
+  // so the strip reflects a change immediately instead of waiting for a poll
+  // tick. Only the listener is per-component — the connection is not, so a
+  // session switch does not disturb it.
+  React.useEffect(() => subscribeToChanges(refresh), [refresh])
 
   const apply = React.useCallback((run: () => Promise<StateResponse>) => {
     run()
       .then((next) => {
         setState(next)
-        setFailed(false)
+        setFailure(null)
       })
-      .catch(() => setFailed(true))
+      .catch((error: unknown) => {
+        setFailure(error instanceof Error ? error.message : String(error))
+      })
   }, [])
 
   /** Flip the collapsed/expanded choice and remember it across reloads. */
@@ -250,8 +301,26 @@ export function SkillDock({ sessionId }: SkillDockProps) {
     if (revertTimer.current !== null) window.clearTimeout(revertTimer.current)
   }, [])
 
-  // Never block the composer on a switch failure.
-  if (failed || state === null) return null
+  // A failure stays visible: a strip that silently vanishes leaves the user with
+  // nothing to report, and the message is what distinguishes "host is down" from
+  // "this route errored".
+  if (failure !== null) {
+    return (
+      <div className={styles.dock} data-skill-switch="">
+        <div className={styles.header}>
+          <span className={`${styles.summary} ${styles.summaryError}`}>技能条不可用</span>
+          <span className={styles.preview} title={failure}>{failure}</span>
+          <span className={styles.actions}>
+            <button type="button" className={styles.action} onClick={refresh}>重试</button>
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  // First paint before the initial read settles: render nothing rather than a
+  // placeholder, so a healthy session never flashes a loading row.
+  if (state === null) return null
 
   const enabledSkills = state.skills.filter((skill) => skill.enabled)
   const summary = `${enabledSkills.length}/${state.skills.length}`

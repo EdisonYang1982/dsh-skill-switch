@@ -341,6 +341,7 @@ bash test/run-all.sh
 | `session-state.test.mjs` | Posture application, work-list ∩ live catalog, row projection, input validation |
 | `integration-routes.mjs` | Real cordis context driving the HTTP routes: mount, toggle, mode, status codes, disposal cleanup |
 | `integration-catalog.mjs` | Driving `agent/pre-step`: first publication, no re-publish when unchanged, replacement on change, a disabled skill cannot load, no injection once unmounted |
+| `sse-stream.test.mjs` | Shared event stream: opens without a session id, every subscriber receives frames, a closed stream goes silent, and **session isolation holds across a shared stream** |
 | `group.test.mjs` | Skill groups: mounting moves only its own members, **unrelated skills are never swept**, idempotence, unknown group 404, roster survives a restart |
 
 ---

@@ -215,6 +215,11 @@
   color: var(--dsw-alias-label-caption, #6b6b74);
 }
 
+/* Failure summary text: the one coloured header state. */
+.summaryError {
+  color: var(--dsw-alias-state-error-primary, #f87171);
+}
+
 /* ── group chip: an all-or-nothing bundle, visually distinct from one skill ─ */
 
 .groupChip {
